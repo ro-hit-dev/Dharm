@@ -1,7 +1,16 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import AuthScreen from './components/AuthScreen';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
-import { loadCloudProfile, recordQuizAttempt, saveCloudProfile, syncLocalProgress } from './lib/cloudSync';
+import {
+  loadCloudProfile,
+  loadQuizAttemptDetails,
+  loadQuizAttempts,
+  recordQuizAttempt,
+  saveCloudProfile,
+  syncLocalProgress,
+  type QuizAttemptDetails,
+  type QuizAttemptSummary,
+} from './lib/cloudSync';
 import type { AuthChangeEvent, Session } from '@supabase/supabase-js';
 import { QUESTION_DAYS, type Question } from './data/questions';
 import {
@@ -22,6 +31,7 @@ import {
   istDateString,
   type AnswerRecord,
   type DayProgress,
+  type LocalQuizAttempt,
   type UserProfile,
 } from './lib/storage';
 
@@ -45,8 +55,13 @@ function App() {
   const [answers, setAnswers] = useState<AnswerRecord[]>([]);
   const [showTrivia, setShowTrivia] = useState(false);
   const [quizDone, setQuizDone] = useState(false);
+  const [quizStartedAt, setQuizStartedAt] = useState<string | null>(null);
   const [dayScores, setDayScores] = useState<Record<number, DayProgress>>(initialSaved.dayScores);
+  const [attemptHistory, setAttemptHistory] = useState<Record<number, LocalQuizAttempt[]>>(initialSaved.attemptHistory);
   const [session, setSession] = useState<Session | null>(null);
+  const [reviewAttempts, setReviewAttempts] = useState<QuizAttemptSummary[]>([]);
+  const [selectedAttempt, setSelectedAttempt] = useState<QuizAttemptDetails | null>(null);
+  const [reviewLoading, setReviewLoading] = useState(false);
   const [authChecking, setAuthChecking] = useState(true);
 
   const currentLang = lang ?? user.language ?? 'en';
@@ -63,9 +78,10 @@ function App() {
     saveState({
       user: screen === 'lang' ? null : user,
       dayScores,
+      attemptHistory,
       ownerId: session?.user.id ?? null,
     });
-  }, [user, dayScores, screen, session?.user.id]);
+  }, [user, dayScores, attemptHistory, screen, session?.user.id]);
 
   useEffect(() => {
     let mounted = true;
@@ -94,7 +110,9 @@ function App() {
         // be merged into the newly signed-in user.
         const canUseLocalForThisAccount = !saved.ownerId || saved.ownerId === nextSession.user.id;
         const localProgress = canUseLocalForThisAccount ? saved.dayScores : {};
+        const localAttempts = canUseLocalForThisAccount ? saved.attemptHistory : {};
         const cloudProgress = await syncLocalProgress(nextSession.user.id, localProgress);
+        const cloudAttempts = await loadQuizAttempts(nextSession.user.id);
 
         if (!mounted) return;
 
@@ -107,7 +125,31 @@ function App() {
           setUser(cloudProfile);
           setLang(cloudProfile.language);
           setDayScores(cloudProgress);
-          saveState({ user: cloudProfile, dayScores: cloudProgress, ownerId: nextSession.user.id });
+          const serverHistory: Record<number, LocalQuizAttempt[]> = {};
+          for (const attempt of cloudAttempts) {
+            const dayIndex = attempt.day - 1;
+            const localDayAttempts = localAttempts[dayIndex] ?? [];
+            const localMatch = localDayAttempts.find((item) => item.attemptNumber === attempt.attemptNumber);
+            if (localMatch) {
+              (serverHistory[dayIndex] ??= []).push(localMatch);
+            } else {
+              (serverHistory[dayIndex] ??= []).push({
+                id: `cloud-${attempt.id}`,
+                day: dayIndex,
+                attemptNumber: attempt.attemptNumber,
+                score: attempt.score,
+                totalQuestions: attempt.totalQuestions,
+                completedAt: attempt.completedAt,
+                answers: [],
+              });
+            }
+          }
+          for (const [day, items] of Object.entries(localAttempts)) {
+            const dayIndex = Number(day);
+            if (!serverHistory[dayIndex]) serverHistory[dayIndex] = items;
+          }
+          setAttemptHistory(serverHistory);
+          saveState({ user: cloudProfile, dayScores: cloudProgress, attemptHistory: serverHistory, ownerId: nextSession.user.id });
           setScreen('main');
         } else {
           const metadata = nextSession.user.user_metadata ?? {};
@@ -185,7 +227,9 @@ function App() {
     setSel(null);
     setAnswers([]);
     setShowTrivia(false);
+    setSelectedAttempt(null);
     setQuizDone(false);
+    setQuizStartedAt(new Date().toISOString());
     setScreen('quiz');
   }
 
@@ -236,9 +280,24 @@ function App() {
       answers: finalAnswers,
     };
 
+    const localAttempt: LocalQuizAttempt = {
+      id: `local-${Date.now()}-${activeDay}`,
+      day: activeDay,
+      attemptNumber: (attemptHistory[activeDay]?.length ?? 0) + 1,
+      score,
+      totalQuestions: total,
+      completedAt,
+      startedAt: quizStartedAt ?? completedAt,
+      answers: finalAnswers,
+    };
+
     setDayScores((prev) => ({
       ...prev,
       [activeDay]: nextProgress,
+    }));
+    setAttemptHistory((prev) => ({
+      ...prev,
+      [activeDay]: [...(prev[activeDay] ?? []), localAttempt],
     }));
 
     if (session?.user) {
@@ -246,18 +305,24 @@ function App() {
         userId: session.user.id,
         dayIndex: activeDay,
         score,
+        totalQuestions: total,
+        startedAt: quizStartedAt ?? completedAt,
         answers: finalAnswers,
       }).then((cloudProgress) => {
         setDayScores((prev) => ({
           ...prev,
-          [activeDay]: { ...cloudProgress, answers: prev[activeDay]?.answers ?? finalAnswers },
+          [activeDay]: { ...cloudProgress, answers: finalAnswers },
         }));
+        void loadQuizAttempts(session.user.id, activeDay).then((attempts) => {
+          setReviewAttempts(attempts);
+        }).catch((error) => console.error('Unable to refresh attempt history:', error));
       }).catch((error) => {
         console.error('Unable to sync quiz attempt:', error);
       });
     }
 
     setQuizDone(true);
+    setQuizStartedAt(null);
   }
 
   function resetToLanguage() {
@@ -265,6 +330,9 @@ function App() {
     setLang(null);
     setUser({ name: '', age: '', language: 'en' });
     setDayScores({});
+    setAttemptHistory({});
+    setReviewAttempts([]);
+    setSelectedAttempt(null);
     setActiveDay(null);
     setScreen('lang');
   }
@@ -283,9 +351,84 @@ function App() {
       setTab('home');
       setActiveDay(null);
       setDayScores({});
+      setAttemptHistory({});
+      setReviewAttempts([]);
+      setSelectedAttempt(null);
       setUser({ name: '', age: '', language: 'en' });
       setLang(null);
       setScreen('auth');
+    }
+  }
+
+  async function openDayReview(dayIndex: number) {
+    setActiveDay(dayIndex);
+    setScreen('review');
+    setTab('profile');
+    setSelectedAttempt(null);
+    setReviewLoading(true);
+
+    try {
+      if (session?.user) {
+        const attempts = await loadQuizAttempts(session.user.id, dayIndex);
+        setReviewAttempts(attempts);
+        if (attempts[0]) {
+          const details = await loadQuizAttemptDetails(session.user.id, attempts[0].id);
+          setSelectedAttempt(details);
+        }
+      } else {
+        const local = [...(attemptHistory[dayIndex] ?? [])].sort((a, b) => b.attemptNumber - a.attemptNumber);
+        const summaries: QuizAttemptSummary[] = local.map((attempt) => ({
+          id: attempt.id,
+          day: dayIndex + 1,
+          attemptNumber: attempt.attemptNumber,
+          score: attempt.score,
+          totalQuestions: attempt.totalQuestions,
+          percentage: attempt.totalQuestions ? Math.round((attempt.score / 10) * 100) : 0,
+          startedAt: attempt.startedAt ?? null,
+          completedAt: attempt.completedAt,
+        }));
+        setReviewAttempts(summaries);
+        const latest = local[0];
+        if (latest) {
+          setSelectedAttempt({
+            id: latest.id,
+            day: dayIndex + 1,
+            attemptNumber: latest.attemptNumber,
+            score: latest.score,
+            totalQuestions: latest.totalQuestions,
+            percentage: latest.totalQuestions ? Math.round((latest.score / 10) * 100) : 0,
+            startedAt: latest.startedAt ?? null,
+            completedAt: latest.completedAt,
+            answers: latest.answers.map((answer, index) => ({
+              id: `${latest.id}-${index + 1}`,
+              attemptId: latest.id,
+              questionNumber: index + 1,
+              questionText: answer.q,
+              selectedText: answer.selected,
+              correctText: answer.ans,
+              isCorrect: answer.correct,
+              explanation: answer.trivia,
+            })),
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Unable to load review history:', error);
+    } finally {
+      setReviewLoading(false);
+    }
+  }
+
+  async function selectAttempt(attemptId: string) {
+    if (!session?.user || !attemptId || attemptId.startsWith('local-')) return;
+    setReviewLoading(true);
+    try {
+      const details = await loadQuizAttemptDetails(session.user.id, attemptId);
+      setSelectedAttempt(details);
+    } catch (error) {
+      console.error('Unable to load attempt:', error);
+    } finally {
+      setReviewLoading(false);
     }
   }
 
@@ -458,30 +601,71 @@ function App() {
 
   if (screen === 'review' && activeDay !== null) {
     const ds = dayScores[activeDay];
-    const ans = ds?.answers ?? [];
+    const selectedAnswers = selectedAttempt?.answers ?? [];
 
     return (
       <div className="app-shell">
         <div className="page-card">
           <div className="center-heading">
-            <div className="section-title">{L.days[activeDay]} — Review</div>
-            <div className="muted small-text">Completed: {ds?.completedAt ?? 'Unknown'}</div>
-            <div className="score-number">{ds?.score ?? 0}<span>/10</span></div>
+            <div className="section-title">{L.days[activeDay]} — Test History</div>
+            <div className="muted small-text">Review your previous attempts and every answer.</div>
           </div>
 
-          <div className="review-title">Your Answers</div>
-          {ans.length === 0 && <div className="muted">No answers recorded for this day.</div>}
-          {ans.map((a, i) => (
-            <div className="review-row" key={`${a.q}-${i}`}>
-              <span className={a.correct ? 'review-mark correct' : 'review-mark incorrect'}>{a.correct ? '✓' : '✗'}</span>
-              <div>
-                <div className="review-question">{a.q}</div>
-                {!a.correct && <div className="correct-answer">Correct: {a.ans}</div>}
-                <div className="review-trivia">Your answer: {a.selected}</div>
-                <div className="review-trivia">{a.trivia}</div>
+          <div className="attempt-list">
+            {reviewAttempts.length === 0 && !reviewLoading && (
+              <div className="muted">No saved test attempts are available for this day.</div>
+            )}
+            {reviewAttempts.map((attempt) => {
+              const active = selectedAttempt?.id === attempt.id && selectedAttempt?.attemptNumber === attempt.attemptNumber;
+              return (
+                <button
+                  type="button"
+                  key={`${attempt.id}-${attempt.attemptNumber}`}
+                  className={`attempt-row ${active ? 'active' : ''}`}
+                  onClick={() => !attempt.id.startsWith('local-') ? void selectAttempt(attempt.id) : setSelectedAttempt({
+                    id: attempt.id, day: attempt.day, attemptNumber: attempt.attemptNumber, score: attempt.score, totalQuestions: attempt.totalQuestions, percentage: attempt.percentage, startedAt: attempt.startedAt ?? null, completedAt: attempt.completedAt,
+                    answers: (attemptHistory[activeDay]?.find((item) => item.attemptNumber === attempt.attemptNumber)?.answers ?? []).map((answer, index) => ({ id: `${attempt.id}-${index + 1}`, attemptId: attempt.id, questionNumber: index + 1, questionText: answer.q, selectedText: answer.selected, correctText: answer.ans, isCorrect: answer.correct, explanation: answer.trivia }))
+                  })}
+                >
+                  <span>Attempt #{attempt.attemptNumber}</span>
+                  <strong>{attempt.score}/{attempt.totalQuestions || 10}</strong>
+                  <span>{new Date(attempt.completedAt).toLocaleString()}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {reviewLoading && <div className="muted">Loading attempt…</div>}
+
+          {selectedAttempt && (
+            <>
+              <div className="review-summary">
+                <div><span className="muted small-text">Score</span><strong>{selectedAttempt.score}/{selectedAttempt.totalQuestions}</strong></div>
+                <div><span className="muted small-text">Accuracy</span><strong>{selectedAttempt.percentage}%</strong></div>
+                <div><span className="muted small-text">Completed</span><strong>{new Date(selectedAttempt.completedAt).toLocaleString()}</strong></div>
               </div>
-            </div>
-          ))}
+
+              <div className="review-title">Question-by-question review</div>
+              {selectedAnswers.length === 0 && (
+                <div className="notice">This attempt is older than the detailed review feature, so its score is available but its individual answers were not stored.</div>
+              )}
+              {selectedAnswers.map((answer) => (
+                <div className="review-row" key={`${answer.attemptId}-${answer.questionNumber}`}>
+                  <span className={answer.isCorrect ? 'review-mark correct' : 'review-mark incorrect'}>{answer.isCorrect ? '✓' : '✗'}</span>
+                  <div>
+                    <div className="review-question">Q{answer.questionNumber}. {answer.questionText}</div>
+                    <div className="review-trivia">Your answer: {answer.selectedText}</div>
+                    {!answer.isCorrect && <div className="correct-answer">Correct: {answer.correctText}</div>}
+                    <div className="review-trivia">{answer.explanation}</div>
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+
+          {!selectedAttempt && ds?.answers && ds.answers.length > 0 && (
+            <div className="notice">Your latest local review is available after selecting an attempt.</div>
+          )}
 
           <button className="secondary-btn" onClick={() => { setScreen('main'); setTab('profile'); setActiveDay(null); }}>{'← Back'}</button>
           <Footer text={L.createdBy} />
@@ -496,7 +680,7 @@ function App() {
         <HomeTab L={L} user={user} dayScores={dayScores} onStart={startDay} />
       )}
       {tab === 'profile' && (
-        <ProfileTab L={L} user={user} dayScores={dayScores} totalScore={totalScore} avgScore={avgScore} isSignedIn={Boolean(session)} onReset={resetToLanguage} onSignOut={handleSignOut} onViewDay={(i: number) => { setActiveDay(i); setScreen('review'); setTab('profile'); }} />
+        <ProfileTab L={L} user={user} dayScores={dayScores} totalScore={totalScore} avgScore={avgScore} isSignedIn={Boolean(session)} onReset={resetToLanguage} onSignOut={handleSignOut} onViewDay={(i: number) => { void openDayReview(i); }} />
       )}
       {tab === 'journey' && <JourneyTab L={L} />}
 

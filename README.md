@@ -84,3 +84,9 @@ Without these variables, the app still runs in guest mode.
 - Required client environment variables: `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY`
 - Do not commit `.env.local` or any Supabase secret/service-role key.
 - `supabase_schema_check.sql` is read-only and is provided to verify the existing `profiles`, `day_progress`, and `quiz_attempts` schema before changing the database.
+
+## Test history and review
+
+Authenticated users now have permanent online quiz history. Each completed attempt is stored in `quiz_attempts`, while each question/answer pair is stored in `quiz_attempt_answers`. The app can therefore show previous attempts and question-by-question review. `day_progress` remains the aggregate progression record.
+
+Run `supabase_migration.sql` once in the Supabase SQL Editor before using the new online test-history feature.

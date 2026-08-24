@@ -21,9 +21,21 @@ export interface DayProgress {
   answers?: AnswerRecord[];
 }
 
+export interface LocalQuizAttempt {
+  id: string;
+  day: number;
+  attemptNumber: number;
+  score: number;
+  totalQuestions: number;
+  completedAt: string;
+  startedAt?: string;
+  answers: AnswerRecord[];
+}
+
 export interface SavedState {
   user: UserProfile | null;
   dayScores: Record<number, DayProgress>;
+  attemptHistory: Record<number, LocalQuizAttempt[]>;
   /** null/undefined = guest-local data; a UUID = data cached for that account. */
   ownerId?: string | null;
 }
@@ -34,6 +46,7 @@ const LEGACY_KEY = 'dharma-quest-v1';
 const EMPTY_STATE: SavedState = {
   user: null,
   dayScores: {},
+  attemptHistory: {},
   ownerId: null,
 };
 
@@ -49,6 +62,27 @@ function parseState(raw: string | null): SavedState {
     const user = parsed.user;
     const dayScores = parsed.dayScores;
     const ownerId = typeof parsed.ownerId === 'string' ? parsed.ownerId : null;
+    const rawHistory = parsed.attemptHistory;
+    const attemptHistory: Record<number, LocalQuizAttempt[]> = {};
+    if (rawHistory && typeof rawHistory === 'object') {
+      for (const [day, attempts] of Object.entries(rawHistory as Record<string, unknown>)) {
+        if (!Array.isArray(attempts)) continue;
+        attemptHistory[Number(day)] = attempts.filter((attempt): attempt is LocalQuizAttempt => {
+          if (!attempt || typeof attempt !== 'object') return false;
+          const item = attempt as Record<string, unknown>;
+          return typeof item.id === 'string' && Array.isArray(item.answers);
+        }).map((attempt) => ({
+          id: String(attempt.id),
+          day: Number(attempt.day ?? Number(day)),
+          attemptNumber: Number(attempt.attemptNumber ?? 1),
+          score: Number(attempt.score ?? 0),
+          totalQuestions: Number(attempt.totalQuestions ?? attempt.answers.length),
+          completedAt: String(attempt.completedAt ?? new Date().toISOString()),
+          startedAt: typeof attempt.startedAt === 'string' ? attempt.startedAt : undefined,
+          answers: attempt.answers,
+        }));
+      }
+    }
 
     return {
       user:
@@ -60,6 +94,7 @@ function parseState(raw: string | null): SavedState {
             }
           : null,
       dayScores: dayScores && typeof dayScores === 'object' ? dayScores as Record<number, DayProgress> : {},
+      attemptHistory,
       ownerId,
     };
   } catch {
@@ -71,10 +106,10 @@ export function loadState(): SavedState {
   if (!canUseStorage()) return EMPTY_STATE;
 
   const current = parseState(window.localStorage.getItem(KEY));
-  if (current.user || Object.keys(current.dayScores).length > 0) return current;
+  if (current.user || Object.keys(current.dayScores).length > 0 || Object.keys(current.attemptHistory).length > 0) return current;
 
   const legacy = parseState(window.localStorage.getItem(LEGACY_KEY));
-  if (legacy.user || Object.keys(legacy.dayScores).length > 0) {
+  if (legacy.user || Object.keys(legacy.dayScores).length > 0 || Object.keys(legacy.attemptHistory).length > 0) {
     try {
       window.localStorage.setItem(KEY, JSON.stringify(legacy));
     } catch {

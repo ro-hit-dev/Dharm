@@ -11,9 +11,6 @@ importers:
       '@supabase/supabase-js':
         specifier: ^2.112.3
         version: 2.112.3
-      dev:
-        specifier: ^0.1.5
-        version: 0.1.5
       react:
         specifier: ^19.1.1
         version: 19.2.8
@@ -494,9 +491,6 @@ packages:
     engines: {node: '>=6.0.0'}
     hasBin: true
 
-  bindings@1.5.0:
-    resolution: {integrity: sha512-p2q/t/mhvuOj/UeLlV6566GD/guowlr0hHxClI0W9m7MWYkL1F0hLo+0Aexs9HSPCtR1SXQ0TD3MMKrXZajbiQ==}
-
   browserslist@4.28.8:
     resolution: {integrity: sha512-V2NpofLblG64mfOtSgDhOJESZEGogzDMBv/q+W6oc4LXWP/q75eOXoOaaOu1EOadB9U4Bwx/e0yzbvwKH8zalA==}
     engines: {node: ^6 || ^7 || ^8 || ^9 || ^10 || ^11 || ^12 || >=13.7}
@@ -520,10 +514,6 @@ packages:
       supports-color:
         optional: true
 
-  dev@0.1.5:
-    resolution: {integrity: sha512-Fix+RToMKpGzEps6m/2HaHQrbp9iGo32hU41Q3LKC+zRy8R03jeu5IAv3S0ZuLXdJy7g8avCayINJMBLXT+5/A==}
-    hasBin: true
-
   electron-to-chromium@1.5.411:
     resolution: {integrity: sha512-gglkxzokjHfawpGxq75XdBV2/l3BAPzrsMs70qgaZdTW5rpV1tC4MdgJVP9fN126bODA4ZJQkn1wryEzJyQXIg==}
 
@@ -545,9 +535,6 @@ packages:
       picomatch:
         optional: true
 
-  file-uri-to-path@1.0.0:
-    resolution: {integrity: sha512-0Zt+s3L7Vf1biwWZ29aARiVYLx7iMGnEUl9x33fbB/j3jR81u/O2LbqK+Bm1CDSNDKVtJ/YjwY7TUd5SkeLQLw==}
-
   fsevents@2.3.3:
     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
@@ -560,11 +547,6 @@ packages:
   iceberg-js@0.8.1:
     resolution: {integrity: sha512-1dhVQZXhcHje7798IVM+xoo/1ZdVfzOMIc8/rgVSijRK38EDqOJoGula9N/8ZI5RD8QTxNQtK/Gozpr+qUqRRA==}
     engines: {node: '>=20.0.0'}
-
-  inotify@1.4.6:
-    resolution: {integrity: sha512-WW8/uqIA04O3AePQVe/Ms3ZLR0yGamaz8YOEpaXc4WBAGOPZfzu58wWErEPSUYaPyDrJRIeCn6PEIQgC1ZyQ5w==}
-    engines: {node: '>=0.8'}
-    os: [linux]
 
   js-tokens@4.0.0:
     resolution: {integrity: sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==}
@@ -584,9 +566,6 @@ packages:
 
   ms@2.1.3:
     resolution: {integrity: sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==}
-
-  nan@2.28.0:
-    resolution: {integrity: sha512-fTsDz99OTq2sVePhGdp4qQhggZFtKr64ZNVyVajRKtMOkJxYekplBh577PiJB12v/D3s2E5cGtOI45LWp6rnLQ==}
 
   nanoid@3.3.18:
     resolution: {integrity: sha512-DTg4MJbGMWkfi6VZFdNt2/caMbQy4Ou+Op/hJQvGEWcnVfoA1QA+xzRKAzw9jD6+GVOOeYr/mIcuDSdug6F6+w==}
@@ -1066,10 +1045,6 @@ snapshots:
 
   baseline-browser-mapping@2.11.15: {}
 
-  bindings@1.5.0:
-    dependencies:
-      file-uri-to-path: 1.0.0
-
   browserslist@4.28.8:
     dependencies:
       baseline-browser-mapping: 2.11.15
@@ -1087,10 +1062,6 @@ snapshots:
   debug@4.4.3:
     dependencies:
       ms: 2.1.3
-
-  dev@0.1.5:
-    dependencies:
-      inotify: 1.4.6
 
   electron-to-chromium@1.5.411: {}
 
@@ -1129,19 +1100,12 @@ snapshots:
     optionalDependencies:
       picomatch: 4.0.5
 
-  file-uri-to-path@1.0.0: {}
-
   fsevents@2.3.3:
     optional: true
 
   gensync@1.0.0-beta.2: {}
 
   iceberg-js@0.8.1: {}
-
-  inotify@1.4.6:
-    dependencies:
-      bindings: 1.5.0
-      nan: 2.28.0
 
   js-tokens@4.0.0: {}
 
@@ -1154,8 +1118,6 @@ snapshots:
       yallist: 3.1.1
 
   ms@2.1.3: {}
-
-  nan@2.28.0: {}
 
   nanoid@3.3.18: {}
 
