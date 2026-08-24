@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import AuthScreen from './components/AuthScreen';
+import { isSupabaseConfigured, supabase } from './lib/supabase';
+import type { AuthChangeEvent, Session } from '@supabase/supabase-js';
 import { QUESTION_DAYS, type Question } from './data/questions';
 import {
   BADGE_ICONS,
@@ -16,14 +19,13 @@ import {
   loadState,
   saveState,
   istDateString,
+  type AnswerRecord,
   type DayProgress,
   type UserProfile,
 } from './lib/storage';
 
-type Screen = 'lang' | 'info' | 'main' | 'quiz';
+type Screen = 'lang' | 'info' | 'main' | 'quiz' | 'auth' | 'review';
 type Tab = 'home' | 'profile' | 'journey';
-type AnswerRecord = { correct: boolean; trivia: string; q: string; ans: string; selected: string };
-
 const initialSaved = loadState();
 
 function Footer({ text }: { text: string }) {
@@ -43,6 +45,8 @@ function App() {
   const [showTrivia, setShowTrivia] = useState(false);
   const [quizDone, setQuizDone] = useState(false);
   const [dayScores, setDayScores] = useState<Record<number, DayProgress>>(initialSaved.dayScores);
+  const [session, setSession] = useState<Session | null>(null);
+  const [authChecking, setAuthChecking] = useState(true);
 
   const currentLang = lang ?? user.language ?? 'en';
   const L = LANGS[currentLang];
@@ -53,6 +57,54 @@ function App() {
   useEffect(() => {
     saveState({ user: screen === 'lang' ? null : user, dayScores });
   }, [user, dayScores, screen]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    if (!isSupabaseConfigured || !supabase) {
+      setAuthChecking(false);
+      return () => {
+        mounted = false;
+      };
+    }
+
+    void supabase.auth.getSession().then(({ data }) => {
+      if (!mounted) return;
+      const nextSession = data.session ?? null;
+      setSession(nextSession);
+      if (nextSession?.user) {
+        const metadata = nextSession.user.user_metadata ?? {};
+        setUser((prev) => ({
+          ...prev,
+          name: typeof metadata.name === 'string' && metadata.name.trim() ? metadata.name : prev.name,
+        }));
+      }
+      setAuthChecking(false);
+    }).catch(() => {
+      if (mounted) setAuthChecking(false);
+    });
+
+    const { data: listener } = supabase.auth.onAuthStateChange((event: AuthChangeEvent, nextSession: Session | null) => {
+      setSession(nextSession);
+      if (nextSession?.user) {
+        const metadata = nextSession.user.user_metadata ?? {};
+        setUser((prev) => ({
+          ...prev,
+          name: typeof metadata.name === 'string' && metadata.name.trim() ? metadata.name : prev.name,
+        }));
+        setScreen((current) => current === 'auth' ? 'main' : current);
+      } else if (event === 'SIGNED_OUT' && mounted) {
+        setScreen('lang');
+        setTab('home');
+      }
+      setAuthChecking(false);
+    });
+
+    return () => {
+      mounted = false;
+      listener.subscription.unsubscribe();
+    };
+  }, []);
 
   function chooseLanguage(next: Language) {
     setLang(next);
@@ -102,7 +154,8 @@ function App() {
   }
 
   function handleNext() {
-    if (!q || activeDay === null) return;
+    if (!q || activeDay === null || sel === null) return;
+
     if (cur + 1 < total) {
       setShowTrivia(false);
       setSel(null);
@@ -110,12 +163,21 @@ function App() {
       return;
     }
 
-    const finalCorrectCount = answers.filter((a) => a.correct).length;
-    const lastAnswerWasCorrect = sel === q.ans;
-    const correctCount = finalCorrectCount + (lastAnswerWasCorrect ? 1 : 0);
-    const score = Math.round((correctCount / total) * 10);
+    // React state updates are asynchronous. `answers` may not yet contain
+    // the final answer, so include it explicitly before calculating the score.
+    const finalAnswer: AnswerRecord = {
+      correct: sel === q.ans,
+      trivia: q.trivia,
+      q: q.q,
+      ans: q.opts[q.ans],
+      selected: q.opts[sel],
+    };
+    const finalAnswers = answers.length === total ? answers : [...answers, finalAnswer];
+    const correctCount = finalAnswers.filter((answer) => answer.correct).length;
+    const score = total > 0 ? Math.round((correctCount / total) * 10) : 0;
 
     const completedAt = istDateString();
+    setAnswers(finalAnswers);
     setDayScores((prev) => {
       const existing = prev[activeDay];
       return {
@@ -124,6 +186,7 @@ function App() {
           score,
           completedAt,
           firstCompletedAt: existing?.firstCompletedAt ?? completedAt,
+          answers: finalAnswers,
         },
       };
     });
@@ -139,6 +202,18 @@ function App() {
     setScreen('lang');
   }
 
+  async function handleSignOut() {
+    try {
+      if (supabase) {
+        await supabase.auth.signOut();
+      }
+    } finally {
+      setSession(null);
+      setTab('home');
+      setScreen('lang');
+    }
+  }
+
   const totalScore = Object.values(dayScores).reduce((sum, item) => sum + item.score, 0);
   const completedDays = Object.keys(dayScores).length;
   const avgScore = completedDays ? Math.round(totalScore / completedDays) : 0;
@@ -149,6 +224,22 @@ function App() {
   }, [activeDay, cur, q, total]);
 
   const wrapStyle = { '--accent': COLORS.saffron, '--gold': COLORS.gold } as CSSProperties;
+
+  if (authChecking) {
+    return (
+      <div className="app-shell" style={wrapStyle}>
+        <div className="page-card centered-card">
+          <div className="om">🕉️</div>
+          <div className="section-title">Path of Dharma</div>
+          <div className="muted">Checking your session…</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (screen === 'auth') {
+    return <AuthScreen onGuest={() => setScreen(initialSaved.user ? 'main' : 'lang')} />;
+  }
 
   if (screen === 'lang') {
     return (
@@ -255,7 +346,7 @@ function App() {
 
         <div className="quiz-card">
           <div className="quiz-image-wrap">
-            <img src={BG_IMAGES[q.img]} alt="" className="quiz-image" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+            <img src={BG_IMAGES[q.img]} alt="" className="quiz-image" onError={(e) => { e.currentTarget.hidden = true; }} />
             <div className="quiz-overlay" />
             <div className="quiz-om">ॐ</div>
             <div className="quiz-question">{q.q}</div>
@@ -290,13 +381,47 @@ function App() {
     );
   }
 
+  if (screen === 'review' && activeDay !== null) {
+    const ds = dayScores[activeDay];
+    const ans = ds?.answers ?? [];
+
+    return (
+      <div className="app-shell">
+        <div className="page-card">
+          <div className="center-heading">
+            <div className="section-title">{L.days[activeDay]} — Review</div>
+            <div className="muted small-text">Completed: {ds?.completedAt ?? 'Unknown'}</div>
+            <div className="score-number">{ds?.score ?? 0}<span>/10</span></div>
+          </div>
+
+          <div className="review-title">Your Answers</div>
+          {ans.length === 0 && <div className="muted">No answers recorded for this day.</div>}
+          {ans.map((a, i) => (
+            <div className="review-row" key={`${a.q}-${i}`}>
+              <span className={a.correct ? 'review-mark correct' : 'review-mark incorrect'}>{a.correct ? '✓' : '✗'}</span>
+              <div>
+                <div className="review-question">{a.q}</div>
+                {!a.correct && <div className="correct-answer">Correct: {a.ans}</div>}
+                <div className="review-trivia">Your answer: {a.selected}</div>
+                <div className="review-trivia">{a.trivia}</div>
+              </div>
+            </div>
+          ))}
+
+          <button className="secondary-btn" onClick={() => { setScreen('main'); setTab('profile'); setActiveDay(null); }}>{'← Back'}</button>
+          <Footer text={L.createdBy} />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell main-shell">
       {tab === 'home' && (
         <HomeTab L={L} user={user} dayScores={dayScores} onStart={startDay} />
       )}
       {tab === 'profile' && (
-        <ProfileTab L={L} user={user} dayScores={dayScores} totalScore={totalScore} avgScore={avgScore} onReset={resetToLanguage} />
+        <ProfileTab L={L} user={user} dayScores={dayScores} totalScore={totalScore} avgScore={avgScore} isSignedIn={Boolean(session)} onReset={resetToLanguage} onSignOut={handleSignOut} onViewDay={(i: number) => { setActiveDay(i); setScreen('review'); setTab('profile'); }} />
       )}
       {tab === 'journey' && <JourneyTab L={L} />}
 
@@ -307,6 +432,15 @@ function App() {
             <div>{label}</div>
           </button>
         ))}
+      </div>
+      <div className="auth-area" style={{ padding: '8px', display: 'flex', alignItems: 'center', gap: 8 }}>
+        {session ? (
+          <div className="signed-in" style={{ color: 'var(--accent)' }}>
+            Signed in as {user.name || session?.user?.email || 'user'}
+          </div>
+        ) : (
+          <button className="link-btn" onClick={() => setScreen('auth')}>Sign in</button>
+        )}
       </div>
     </div>
   );
@@ -360,7 +494,7 @@ function HomeTab({ L, user, dayScores, onStart }: { L: (typeof LANGS)[Language];
   );
 }
 
-function ProfileTab({ L, user, dayScores, totalScore, avgScore, onReset }: { L: (typeof LANGS)[Language]; user: UserProfile; dayScores: Record<number, DayProgress>; totalScore: number; avgScore: number; onReset: () => void }) {
+function ProfileTab({ L, user, dayScores, totalScore, avgScore, isSignedIn, onReset, onSignOut, onViewDay }: { L: (typeof LANGS)[Language]; user: UserProfile; dayScores: Record<number, DayProgress>; totalScore: number; avgScore: number; isSignedIn: boolean; onReset: () => void; onSignOut: () => Promise<void>; onViewDay: (i: number) => void }) {
   return (
     <div>
       <div className="page-card">
@@ -385,7 +519,10 @@ function ProfileTab({ L, user, dayScores, totalScore, avgScore, onReset }: { L: 
         {L.days.map((day, i) => dayScores[i] !== undefined && (
           <div className="history-row" key={day}>
             <div><div className="history-name">{day}</div><div className="muted small-text">Ārambhaka Level</div></div>
-            <div className={`history-score ${dayScores[i].score >= 7 ? 'green' : dayScores[i].score >= 5 ? 'orange' : 'red'}`}>{dayScores[i].score}<span>/10</span></div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div className={`history-score ${dayScores[i].score >= 7 ? 'green' : dayScores[i].score >= 5 ? 'orange' : 'red'}`}>{dayScores[i].score}<span>/10</span></div>
+              <button className="link-btn" onClick={() => onViewDay(i)}>View</button>
+            </div>
           </div>
         ))}
       </div>
@@ -406,7 +543,10 @@ function ProfileTab({ L, user, dayScores, totalScore, avgScore, onReset }: { L: 
         <div className="card-heading">Local progress</div>
         <div className="muted">Your current name, age, language and quiz scores are stored only in this browser until an account/database is added.</div>
         <div className="muted small-text spacer">Total points recorded: {totalScore}</div>
-        <button className="danger-btn" onClick={onReset}>Reset Local Progress</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="danger-btn" onClick={onReset}>Reset Local Progress</button>
+          {isSignedIn && <button className="secondary-btn" onClick={onSignOut}>Sign out</button>}
+        </div>
       </div>
       <Footer text={L.createdBy} />
     </div>

@@ -53,3 +53,26 @@ You can connect the GitHub repository to Cloudflare Pages for automatic deployme
 ## Next architecture step
 
 For accounts, cross-device progress, and database-backed history, add Supabase Auth + PostgreSQL after this frontend is stable.
+
+## Repaired build notes
+
+This version fixes the main runtime issues in the original prototype:
+
+- Guest onboarding works without forcing the authentication screen.
+- The Sign In action now renders the authentication screen correctly.
+- The final quiz answer is included in the calculated score and saved review.
+- Supabase configuration is optional; missing environment variables no longer crash the app.
+- Supabase auth state is strongly typed and safely handled.
+- Local storage is guarded against malformed JSON, unavailable storage, and legacy-state migration.
+- Day unlock/retest logic remains based on 06:00 IST and first completion dates.
+
+### Environment
+
+For account authentication, provide:
+
+```env
+VITE_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
+VITE_SUPABASE_PUBLISHABLE_KEY=YOUR_PUBLISHABLE_KEY
+```
+
+Without these variables, the app still runs in guest mode.
