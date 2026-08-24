@@ -24,6 +24,8 @@ export interface DayProgress {
 export interface SavedState {
   user: UserProfile | null;
   dayScores: Record<number, DayProgress>;
+  /** null/undefined = guest-local data; a UUID = data cached for that account. */
+  ownerId?: string | null;
 }
 
 const KEY = 'dharma-quest-v2';
@@ -32,6 +34,7 @@ const LEGACY_KEY = 'dharma-quest-v1';
 const EMPTY_STATE: SavedState = {
   user: null,
   dayScores: {},
+  ownerId: null,
 };
 
 function canUseStorage(): boolean {
@@ -45,6 +48,7 @@ function parseState(raw: string | null): SavedState {
     const parsed = JSON.parse(raw) as Partial<SavedState>;
     const user = parsed.user;
     const dayScores = parsed.dayScores;
+    const ownerId = typeof parsed.ownerId === 'string' ? parsed.ownerId : null;
 
     return {
       user:
@@ -56,6 +60,7 @@ function parseState(raw: string | null): SavedState {
             }
           : null,
       dayScores: dayScores && typeof dayScores === 'object' ? dayScores as Record<number, DayProgress> : {},
+      ownerId,
     };
   } catch {
     return EMPTY_STATE;

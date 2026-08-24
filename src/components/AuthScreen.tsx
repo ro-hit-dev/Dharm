@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
+import type { Language } from '../data/content';
 
 interface AuthScreenProps {
   onGuest: () => void;
@@ -12,6 +13,8 @@ export default function AuthScreen({ onGuest }: AuthScreenProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
+  const [age, setAge] = useState('');
+  const [language, setLanguage] = useState<Language>('en');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
@@ -47,6 +50,14 @@ export default function AuthScreen({ onGuest }: AuthScreenProps) {
       return;
     }
 
+    if (mode === 'signup') {
+      const numericAge = Number(age);
+      if (!age.trim() || !Number.isFinite(numericAge) || numericAge < 5 || numericAge > 120) {
+        setError('Please enter a valid age between 5 and 120.');
+        return;
+      }
+    }
+
     setLoading(true);
 
     try {
@@ -54,7 +65,13 @@ export default function AuthScreen({ onGuest }: AuthScreenProps) {
         const { data, error: signUpError } = await supabase.auth.signUp({
           email: normalizedEmail,
           password,
-          options: { data: { name: name.trim() } },
+          options: {
+            data: {
+              name: name.trim(),
+              age: Number.parseInt(age, 10),
+              language,
+            },
+          },
         });
 
         if (signUpError) {
@@ -64,8 +81,8 @@ export default function AuthScreen({ onGuest }: AuthScreenProps) {
 
         setMessage(
           data.session
-            ? 'Account created successfully.'
-            : 'Account created. Check your email to confirm your account.',
+            ? 'Account created successfully. Your profile is saved.'
+            : 'Account created. Check your email to confirm your account. Your profile will be ready when you sign in.',
         );
         return;
       }
@@ -141,16 +158,40 @@ export default function AuthScreen({ onGuest }: AuthScreenProps) {
 
           <form onSubmit={handleSubmit}>
             {mode === 'signup' && (
-              <label className="auth-field">
-                <span>Name</span>
-                <input
-                  type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="Your name"
-                  autoComplete="name"
-                />
-              </label>
+              <>
+                <label className="auth-field">
+                  <span>Name</span>
+                  <input
+                    type="text"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="Your name"
+                    autoComplete="name"
+                  />
+                </label>
+
+                <label className="auth-field">
+                  <span>Age</span>
+                  <input
+                    type="number"
+                    min={5}
+                    max={120}
+                    value={age}
+                    onChange={(e) => setAge(e.target.value)}
+                    placeholder="Your age"
+                    autoComplete="bday-year"
+                  />
+                </label>
+
+                <label className="auth-field">
+                  <span>Language</span>
+                  <select value={language} onChange={(e) => setLanguage(e.target.value as Language)}>
+                    <option value="en">English</option>
+                    <option value="hi">हिन्दी</option>
+                    <option value="mr">मराठी</option>
+                  </select>
+                </label>
+              </>
             )}
 
             <label className="auth-field">

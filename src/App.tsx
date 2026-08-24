@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import AuthScreen from './components/AuthScreen';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
-import { loadCloudProfile, loadCloudProgress, recordQuizAttempt, saveCloudProfile } from './lib/cloudSync';
+import { loadCloudProfile, recordQuizAttempt, saveCloudProfile, syncLocalProgress } from './lib/cloudSync';
 import type { AuthChangeEvent, Session } from '@supabase/supabase-js';
 import { QUESTION_DAYS, type Question } from './data/questions';
 import {
@@ -56,8 +56,16 @@ function App() {
   const total = qs.length;
 
   useEffect(() => {
-    saveState({ user: screen === 'lang' ? null : user, dayScores });
-  }, [user, dayScores, screen]);
+    // Never re-save a signed-out account while the auth screen is visible.
+    // Guest data is marked with ownerId = null; authenticated data is namespaced
+    // to the Supabase user ID so one account cannot migrate another account's cache.
+    if (screen === 'auth') return;
+    saveState({
+      user: screen === 'lang' ? null : user,
+      dayScores,
+      ownerId: session?.user.id ?? null,
+    });
+  }, [user, dayScores, screen, session?.user.id]);
 
   useEffect(() => {
     let mounted = true;
@@ -80,22 +88,39 @@ function App() {
 
       try {
         const cloudProfile = await loadCloudProfile(nextSession.user);
-        const cloudProgress = await loadCloudProgress(nextSession.user.id);
+        const saved = loadState();
+        // A local cache is safe to migrate only when it is guest data or already
+        // belongs to this exact account. A different account's cache must never
+        // be merged into the newly signed-in user.
+        const canUseLocalForThisAccount = !saved.ownerId || saved.ownerId === nextSession.user.id;
+        const localProgress = canUseLocalForThisAccount ? saved.dayScores : {};
+        const cloudProgress = await syncLocalProgress(nextSession.user.id, localProgress);
 
         if (!mounted) return;
 
         if (cloudProfile && cloudProfile.name.trim() && cloudProfile.age.trim()) {
+          // A newly-created account stores its complete profile in Auth metadata.
+          // Upsert the same data into public.profiles so future logins can load it
+          // without asking for name/age/language again.
+          await saveCloudProfile(nextSession.user.id, cloudProfile);
+          if (!mounted) return;
           setUser(cloudProfile);
           setLang(cloudProfile.language);
           setDayScores(cloudProgress);
+          saveState({ user: cloudProfile, dayScores: cloudProgress, ownerId: nextSession.user.id });
           setScreen('main');
         } else {
           const metadata = nextSession.user.user_metadata ?? {};
           const metadataName = typeof metadata.name === 'string' ? metadata.name : '';
+          const metadataAge = typeof metadata.age === 'number' ? String(metadata.age) : typeof metadata.age === 'string' ? metadata.age : '';
+          const metadataLanguage = metadata.language === 'hi' || metadata.language === 'mr' ? metadata.language : 'en';
           setUser((prev) => ({
             ...prev,
             name: metadataName.trim() || prev.name,
+            age: metadataAge || prev.age,
+            language: metadataLanguage as Language,
           }));
+          setLang(metadataLanguage as Language);
           setScreen('info');
         }
       } catch (error) {
@@ -250,9 +275,16 @@ function App() {
         await supabase.auth.signOut();
       }
     } finally {
+      // Remove account-local cache so the next account on this browser cannot
+      // accidentally inherit the previous user's progress. Cloud progress remains
+      // محفوظ in Supabase and will be reloaded on the next sign-in.
+      clearState();
       setSession(null);
       setTab('home');
       setActiveDay(null);
+      setDayScores({});
+      setUser({ name: '', age: '', language: 'en' });
+      setLang(null);
       setScreen('auth');
     }
   }

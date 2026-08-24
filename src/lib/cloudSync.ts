@@ -22,7 +22,7 @@ function normalizeProfile(user: User, row: Record<string, unknown> | null): User
   return {
     name: typeof row?.name === 'string' && row.name.trim() ? row.name : nameFromMetadata,
     age: row?.age !== null && row?.age !== undefined ? String(row.age) : ageFromMetadata,
-    language: normalizeLanguage(row?.language),
+    language: normalizeLanguage(row?.language ?? metadata.language),
   };
 }
 
@@ -35,8 +35,10 @@ export async function loadCloudProfile(user: User): Promise<UserProfile | null> 
     .maybeSingle();
 
   if (error) throw error;
-  if (!data) return null;
-  return normalizeProfile(user, data as Record<string, unknown>);
+  // The profile row may not exist immediately after signup (for example when
+  // email confirmation is enabled). Supabase Auth metadata is therefore a
+  // valid first source for the initial profile. The caller can upsert it.
+  return normalizeProfile(user, data as Record<string, unknown> | null);
 }
 
 export async function saveCloudProfile(userId: string, profile: UserProfile): Promise<void> {
@@ -87,10 +89,12 @@ export async function recordQuizAttempt(params: {
   dayIndex: number;
   score: number;
   answers?: AnswerRecord[];
+  completedAt?: string;
+  firstCompletedAt?: string;
 }): Promise<DayProgress> {
   const client = requireClient();
   const dbDay = params.dayIndex + 1;
-  const completedAt = new Date().toISOString();
+  const completedAt = params.completedAt ?? new Date().toISOString();
 
   const { data: existing, error: readError } = await client
     .from('day_progress')
@@ -105,7 +109,7 @@ export async function recordQuizAttempt(params: {
 
   const attempts = Number(existing?.attempts ?? 0) + 1;
   const bestScore = Math.max(Number(existing?.best_score ?? 0), params.score);
-  const firstCompletedAt = existing?.first_completed_at ?? completedAt;
+  const firstCompletedAt = existing?.first_completed_at ?? params.firstCompletedAt ?? completedAt;
 
   if (existing?.id) {
     const { error } = await client
@@ -152,33 +156,63 @@ export async function syncLocalProgress(
   userId: string,
   localProgress: Record<number, DayProgress>,
 ): Promise<Record<number, DayProgress>> {
-  const merged = { ...localProgress };
   const cloud = await loadCloudProgress(userId);
+  const merged: Record<number, DayProgress> = { ...cloud };
 
-  for (const [key, cloudEntry] of Object.entries(cloud)) {
-    const day = Number(key);
-    const local = merged[day];
-    if (!local || cloudEntry.score > local.score) {
-      merged[day] = { ...cloudEntry, answers: local?.answers };
-    } else if (local.firstCompletedAt && cloudEntry.firstCompletedAt) {
-      merged[day] = {
-        ...local,
-        firstCompletedAt: local.firstCompletedAt < cloudEntry.firstCompletedAt ? local.firstCompletedAt : cloudEntry.firstCompletedAt,
+  // Migrate guest-local progress that is missing from the account, and preserve
+  // a higher local score when the account already contains the same day.
+  for (const [key, local] of Object.entries(localProgress)) {
+    const dayIndex = Number(key);
+    if (!Number.isFinite(dayIndex) || dayIndex < 0) continue;
+
+    const cloudEntry = cloud[dayIndex];
+    const localIsBetter = !cloudEntry || local.score > cloudEntry.score;
+
+    if (localIsBetter) {
+      try {
+        const uploaded = await recordQuizAttempt({
+          userId,
+          dayIndex,
+          score: local.score,
+          answers: local.answers,
+          completedAt: local.completedAt,
+          firstCompletedAt: local.firstCompletedAt ?? local.completedAt,
+        });
+        merged[dayIndex] = uploaded;
+      } catch (error) {
+        console.error(`Unable to migrate local progress for day ${dayIndex + 1}:`, error);
+        merged[dayIndex] = local;
+      }
+    } else {
+      merged[dayIndex] = {
+        ...cloudEntry,
+        answers: local.answers ?? cloudEntry.answers,
+        firstCompletedAt:
+          local.firstCompletedAt && cloudEntry.firstCompletedAt
+            ? local.firstCompletedAt < cloudEntry.firstCompletedAt
+              ? local.firstCompletedAt
+              : cloudEntry.firstCompletedAt
+            : cloudEntry.firstCompletedAt ?? local.firstCompletedAt,
       };
     }
   }
 
-  const localHadNoCloud = Object.keys(cloud).length === 0;
-  if (localHadNoCloud) {
-    for (const [key, local] of Object.entries(localProgress)) {
-      const dayIndex = Number(key);
-      if (!Number.isFinite(dayIndex)) continue;
-      try {
-        await recordQuizAttempt({ userId, dayIndex, score: local.score, answers: local.answers });
-      } catch {
-        // Keep the local progress usable even if a first-time cloud merge fails.
-      }
-    }
+  // Re-read the canonical cloud state after migration so newly-created rows are
+  // reflected in the client, while retaining local answer-review data.
+  const refreshed = await loadCloudProgress(userId);
+  for (const [key, entry] of Object.entries(refreshed)) {
+    const dayIndex = Number(key);
+    const local = localProgress[dayIndex];
+    merged[dayIndex] = {
+      ...entry,
+      answers: local?.answers,
+      firstCompletedAt:
+        entry.firstCompletedAt && local?.firstCompletedAt
+          ? local.firstCompletedAt < entry.firstCompletedAt
+            ? local.firstCompletedAt
+            : entry.firstCompletedAt
+          : entry.firstCompletedAt ?? local?.firstCompletedAt,
+    };
   }
 
   return merged;
