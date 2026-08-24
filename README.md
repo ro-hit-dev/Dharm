@@ -76,3 +76,11 @@ VITE_SUPABASE_PUBLISHABLE_KEY=YOUR_PUBLISHABLE_KEY
 ```
 
 Without these variables, the app still runs in guest mode.
+
+## Deployment notes
+
+- Cloudflare Pages build: `pnpm build`
+- Build output: `dist`
+- Required client environment variables: `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY`
+- Do not commit `.env.local` or any Supabase secret/service-role key.
+- `supabase_schema_check.sql` is read-only and is provided to verify the existing `profiles`, `day_progress`, and `quiz_attempts` schema before changing the database.

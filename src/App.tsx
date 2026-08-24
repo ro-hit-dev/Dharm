@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import AuthScreen from './components/AuthScreen';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
+import { loadCloudProfile, loadCloudProgress, recordQuizAttempt, saveCloudProfile } from './lib/cloudSync';
 import type { AuthChangeEvent, Session } from '@supabase/supabase-js';
 import { QUESTION_DAYS, type Question } from './data/questions';
 import {
@@ -34,7 +35,7 @@ function Footer({ text }: { text: string }) {
 
 function App() {
   const [lang, setLang] = useState<Language | null>(initialSaved.user?.language ?? null);
-  const [screen, setScreen] = useState<Screen>(initialSaved.user ? 'main' : 'lang');
+  const [screen, setScreen] = useState<Screen>(initialSaved.user ? 'main' : 'auth');
   const [user, setUser] = useState<UserProfile>(initialSaved.user ?? { name: '', age: '', language: 'en' });
   const [formErr, setFormErr] = useState('');
   const [tab, setTab] = useState<Tab>('home');
@@ -68,36 +69,55 @@ function App() {
       };
     }
 
-    void supabase.auth.getSession().then(({ data }) => {
+    async function hydrate(nextSession: Session | null) {
       if (!mounted) return;
-      const nextSession = data.session ?? null;
       setSession(nextSession);
-      if (nextSession?.user) {
-        const metadata = nextSession.user.user_metadata ?? {};
-        setUser((prev) => ({
-          ...prev,
-          name: typeof metadata.name === 'string' && metadata.name.trim() ? metadata.name : prev.name,
-        }));
+
+      if (!nextSession?.user) {
+        setAuthChecking(false);
+        return;
       }
-      setAuthChecking(false);
-    }).catch(() => {
-      if (mounted) setAuthChecking(false);
-    });
+
+      try {
+        const cloudProfile = await loadCloudProfile(nextSession.user);
+        const cloudProgress = await loadCloudProgress(nextSession.user.id);
+
+        if (!mounted) return;
+
+        if (cloudProfile && cloudProfile.name.trim() && cloudProfile.age.trim()) {
+          setUser(cloudProfile);
+          setLang(cloudProfile.language);
+          setDayScores(cloudProgress);
+          setScreen('main');
+        } else {
+          const metadata = nextSession.user.user_metadata ?? {};
+          const metadataName = typeof metadata.name === 'string' ? metadata.name : '';
+          setUser((prev) => ({
+            ...prev,
+            name: metadataName.trim() || prev.name,
+          }));
+          setScreen('info');
+        }
+      } catch (error) {
+        console.error('Unable to load cloud account data:', error);
+        if (mounted) setScreen('info');
+      } finally {
+        if (mounted) setAuthChecking(false);
+      }
+    }
+
+    void supabase.auth.getSession().then(({ data }) => hydrate(data.session ?? null));
 
     const { data: listener } = supabase.auth.onAuthStateChange((event: AuthChangeEvent, nextSession: Session | null) => {
-      setSession(nextSession);
-      if (nextSession?.user) {
-        const metadata = nextSession.user.user_metadata ?? {};
-        setUser((prev) => ({
-          ...prev,
-          name: typeof metadata.name === 'string' && metadata.name.trim() ? metadata.name : prev.name,
-        }));
-        setScreen((current) => current === 'auth' ? 'main' : current);
-      } else if (event === 'SIGNED_OUT' && mounted) {
-        setScreen('lang');
+      if (event === 'SIGNED_OUT') {
+        setSession(null);
         setTab('home');
+        setActiveDay(null);
+        setScreen('auth');
+        setAuthChecking(false);
+        return;
       }
-      setAuthChecking(false);
+      void hydrate(nextSession);
     });
 
     return () => {
@@ -125,6 +145,12 @@ function App() {
     setFormErr('');
     setScreen('main');
     setTab('home');
+
+    if (session?.user) {
+      void saveCloudProfile(session.user.id, user).catch((error) => {
+        console.error('Unable to save profile:', error);
+      });
+    }
   }
 
   function startDay(day: number) {
@@ -178,18 +204,34 @@ function App() {
 
     const completedAt = istDateString();
     setAnswers(finalAnswers);
-    setDayScores((prev) => {
-      const existing = prev[activeDay];
-      return {
-        ...prev,
-        [activeDay]: {
-          score,
-          completedAt,
-          firstCompletedAt: existing?.firstCompletedAt ?? completedAt,
-          answers: finalAnswers,
-        },
-      };
-    });
+    const nextProgress: DayProgress = {
+      score,
+      completedAt,
+      firstCompletedAt: dayScores[activeDay]?.firstCompletedAt ?? completedAt,
+      answers: finalAnswers,
+    };
+
+    setDayScores((prev) => ({
+      ...prev,
+      [activeDay]: nextProgress,
+    }));
+
+    if (session?.user) {
+      void recordQuizAttempt({
+        userId: session.user.id,
+        dayIndex: activeDay,
+        score,
+        answers: finalAnswers,
+      }).then((cloudProgress) => {
+        setDayScores((prev) => ({
+          ...prev,
+          [activeDay]: { ...cloudProgress, answers: prev[activeDay]?.answers ?? finalAnswers },
+        }));
+      }).catch((error) => {
+        console.error('Unable to sync quiz attempt:', error);
+      });
+    }
+
     setQuizDone(true);
   }
 
@@ -210,7 +252,8 @@ function App() {
     } finally {
       setSession(null);
       setTab('home');
-      setScreen('lang');
+      setActiveDay(null);
+      setScreen('auth');
     }
   }
 
@@ -540,8 +583,8 @@ function ProfileTab({ L, user, dayScores, totalScore, avgScore, isSignedIn, onRe
       </div>
 
       <div className="page-card">
-        <div className="card-heading">Local progress</div>
-        <div className="muted">Your current name, age, language and quiz scores are stored only in this browser until an account/database is added.</div>
+        <div className="card-heading">Progress & account</div>
+        <div className="muted">Guest progress is stored locally. When you are signed in, your profile and quiz scores are synchronized with your Supabase account.</div>
         <div className="muted small-text spacer">Total points recorded: {totalScore}</div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="danger-btn" onClick={onReset}>Reset Local Progress</button>
